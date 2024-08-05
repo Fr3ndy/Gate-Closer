@@ -88,6 +88,8 @@ The electrical diagram will be available soon.
 - `{ "code": 9 }` - Gate status returned successfully.
 
 ### Useful Resources
+
+- [ESP32](https://it.aliexpress.com/item/1005006336964908.html?spm=a2g0o.productlist.main.1.74dcJYYTJYYT9c&algo_pvid=b82dedef-8127-41d0-acf1-41ef19eff18a&algo_exp_id=b82dedef-8127-41d0-acf1-41ef19eff18a-0&pdp_npi=4%40dis%21EUR%219.01%212.52%21%21%2168.65%2119.22%21%4021039f3e17228458748548204e433c%2112000036806447870%21sea%21IT%212760666466%21X&curPageLogUid=iDSbUGOZlJSm&utparam-url=scene%3Asearch%7Cquery_from%3A)
 - [Closer | Euromatic Gate](https://euromaticgate.net/prodotto/closer/#closer_5_8_15_115v)
 - [Q81S Control Unit Manual](https://euromaticgate.net/wp-content/uploads/2022/03/Q81S_09_2021_it_rev01_22.pdf)
 
