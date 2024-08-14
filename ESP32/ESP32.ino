@@ -19,8 +19,8 @@
 
 extern const char* html;
 
-const char* ssid = "****";
-const char* password = "****";
+const char* ssid = "Router1";
+const char* password = "ELEQR678";
 
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600;
@@ -36,6 +36,8 @@ WebServer server(80);
 #define GATE_OPEN_LED 26
 #define GATE_CLOSE 34
 #define GATE_CLOSE_LED 25
+
+#define CONNECTION_LED 27
 
 bool lightEnabled = false;
 int lightOnTime = 0;
@@ -92,16 +94,23 @@ void setup() {
   pinMode(GATE_OPEN_LED, OUTPUT);
   pinMode(GATE_CLOSE, INPUT);
   pinMode(GATE_CLOSE_LED, OUTPUT);
+  pinMode(CONNECTION_LED, OUTPUT); // Set the pin mode for CONNECTION_LED
 
   digitalWrite(RELAY_OPEN, LOW);
   digitalWrite(RELAY_STOP, LOW);
   digitalWrite(RELAY_LIGHT, LOW);
+  digitalWrite(CONNECTION_LED, LOW); // Initialize CONNECTION_LED to off
 
   WiFi.begin(ssid, password);
+  
   while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
+    digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED)); // Toggle the LED
+    delay(500); // Wait for half a second
     Serial.println("Connessione al WiFi...");
   }
+
+  digitalWrite(CONNECTION_LED, HIGH); // Turn on the LED when connected
+
   Serial.println("Connesso al WiFi");
   Serial.print("Indirizzo IP: ");
   Serial.println(WiFi.localIP());
@@ -176,9 +185,9 @@ void handleStayOpen() {
     digitalWrite(RELAY_OPEN, HIGH);
     delay(1000);
     digitalWrite(RELAY_OPEN, LOW);
-    while (digitalRead(GATE_OPEN) == LOW) {
+    /*while (digitalRead(GATE_OPEN) == LOW) {
       delay(10);
-    }
+    }*/
   }
   server.send(200, "application/json", "{\"code\":4}");
 }

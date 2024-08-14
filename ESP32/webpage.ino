@@ -139,7 +139,7 @@ const char* html = R"rawliteral(
                         showAlert('Cancello in movimento');
                         break;
                     case 4:
-                        showAlert('Operazione di apertura fissa completata con successo');
+                        showAlert('Operazione di apertura fissa in esecuzione');
                         break;
                     case 5:
                         showAlert('Errore di deserializzazione durante l\'impostazione');
@@ -236,7 +236,10 @@ const char* html = R"rawliteral(
                                 document.getElementById('openBtn').disabled = false;
                                 document.getElementById('openBtn').innerHTML = "Apri";
                             }
-                        } else {
+                        } else if(data.code === 2){
+                            document.getElementById('openBtn').disabled = false;
+                            document.getElementById('openBtn').innerHTML = "Riprendi";
+                        }else {
                             handleResponseCode(data.code);
                         }
                     });
