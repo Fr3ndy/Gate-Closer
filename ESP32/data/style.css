@@ -1,0 +1,122 @@
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+    color: #333;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+body.dark-mode {
+    background-color: #121212;
+    color: #f0f0f0;
+}
+
+#loading {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 9999;
+    color: white;
+    font-size: 30px;
+    text-align: center;
+    padding-top: 20%;
+}
+
+button:disabled {
+    background-color: #292929 !important;
+}
+
+#connection-status-false {
+    background-color: #c91c1c;
+    color: white;
+    text-align: center;
+    padding: 10px;
+    display: none;
+}
+
+/* Styles for the navigation and theme toggle */
+.nav-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+}
+
+.theme-toggle {
+    margin-left: 20px;
+}
+
+/* Switch styles */
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+    border-radius: 34px;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 26px;
+    width: 26px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked+.slider {
+    background-color: #2196F3;
+}
+
+input:checked+.slider:before {
+    transform: translateX(26px);
+}
+
+.footer {
+    position: fixed;
+    bottom: 0px;
+    right: 0px;
+    font-size: 12px;
+    padding: 1em;
+    width: 100%;
+    color: #888;
+    background-color: #121212;
+}
+
+@media (prefers-color-scheme: dark) {
+    .modal-content {
+        background-color: #343a40 !important;
+        color: #fff !important;
+    }
+
+    .modal-header, .modal-footer {
+        border-color: #495057 !important;
+    }
+
+    .btn-close {
+        filter: invert(1) grayscale(100%) brightness(200%);
+    }
+}

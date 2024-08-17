@@ -1,26 +1,14 @@
+#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
 #include <time.h>
-#include <ArduinoJson.h>
 #include <Keypad.h>
 #include <Ticker.h>
+#include <SPIFFS.h>
 
-// Mappa dei codici di risposta del server:
-// {"code":1} - Operazione di apertura completata con successo
-// {"code":2} - Operazione di stop completata con successo
-// {"code":3} - Cancello in movimento
-// {"code":4} - Operazione di apertura fissa completata con successo
-// {"code":5} - Errore di deserializzazione durante l'impostazione
-// {"code":6} - Impostazioni salvate con successo
-// {"code":7} - Nessun dato inviato per l'impostazione
-// {"code":8} - Impostazioni restituite con successo
-// {"code":9} - Stato del cancello restituito con successo
-
-extern const char* html;
-
-const char* ssid = "Router1";
-const char* password = "ELEQR678";
+const char* ssid = "****";
+const char* password = "****";
 
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600;
@@ -67,7 +55,6 @@ const unsigned long keyPressTimeout = 5000;
 
 Ticker lightTicker;
 
-// Dichiarazione di tutte le funzioni
 void loadSettings();
 void handleRoot();
 void handleOpen();
@@ -83,9 +70,21 @@ int getCurrentTime();
 void saveSettings();
 void turnOffLight();
 void performGateAction();
+void sendJsonResponse(int code);
+void activateRelay(int pin, int duration);
+void updateGateLedStatus();
 
 void setup() {
   Serial.begin(115200);
+
+  if (!SPIFFS.begin(true)) {
+    Serial.println("Errore nell'inizializzazione di SPIFFS");
+    return;
+  }
+  Serial.println("SPIFFS inizializzato con successo");
+
+  Serial.printf("Spazio totale: %d bytes\n", SPIFFS.totalBytes());
+  Serial.printf("Spazio utilizzato: %d bytes\n", SPIFFS.usedBytes());
 
   pinMode(RELAY_OPEN, OUTPUT);
   pinMode(RELAY_STOP, OUTPUT);
@@ -94,26 +93,28 @@ void setup() {
   pinMode(GATE_OPEN_LED, OUTPUT);
   pinMode(GATE_CLOSE, INPUT);
   pinMode(GATE_CLOSE_LED, OUTPUT);
-  pinMode(CONNECTION_LED, OUTPUT); // Set the pin mode for CONNECTION_LED
+  pinMode(CONNECTION_LED, OUTPUT);
 
   digitalWrite(RELAY_OPEN, LOW);
   digitalWrite(RELAY_STOP, LOW);
   digitalWrite(RELAY_LIGHT, LOW);
-  digitalWrite(CONNECTION_LED, LOW); // Initialize CONNECTION_LED to off
+  digitalWrite(CONNECTION_LED, LOW);
 
   WiFi.begin(ssid, password);
   
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED)); // Toggle the LED
-    delay(500); // Wait for half a second
-    Serial.println("Connessione al WiFi...");
+    digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED));
+    delay(500);
   }
 
-  digitalWrite(CONNECTION_LED, HIGH); // Turn on the LED when connected
+  digitalWrite(CONNECTION_LED, HIGH);
 
   Serial.println("Connesso al WiFi");
   Serial.print("Indirizzo IP: ");
   Serial.println(WiFi.localIP());
+
+  Serial.print("Indirizzo MAC: ");
+  Serial.println(WiFi.macAddress());
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
@@ -127,69 +128,69 @@ void setup() {
   server.on("/setsettings", HTTP_POST, handleSetSettings);
   server.on("/getsettings", HTTP_GET, handleGetSettings);
   server.on("/getstatus", HTTP_GET, handleGetStatus);
+  server.onNotFound([]() {
+    if (!handleFileRead(server.uri()))
+      server.send(404, "text/plain", "File Not Found");
+  });
 
+  listFiles();
+  
   server.begin();
+  Serial.println("Server HTTP avviato");
 }
 
 void loop() {
   server.handleClient();
   syncTimeIfNeeded();
   handleKeypad();
-
-  if (digitalRead(GATE_CLOSE) == HIGH) {
-    digitalWrite(GATE_CLOSE_LED, HIGH);
-    digitalWrite(GATE_OPEN_LED, LOW);
-  } else if (digitalRead(GATE_OPEN) == HIGH) {
-    digitalWrite(GATE_OPEN_LED, HIGH);
-    digitalWrite(GATE_CLOSE_LED, LOW);
-  } else {
-    digitalWrite(GATE_OPEN_LED, LOW);
-    digitalWrite(GATE_CLOSE_LED, LOW);
-  }
+  updateGateLedStatus();
 }
 
 void handleRoot() {
-  server.send(200, "text/html", html);
+  if (SPIFFS.exists("/index.html")) {
+    File file = SPIFFS.open("/index.html", "r");
+    server.streamFile(file, "text/html");
+    file.close();
+  } else {
+    server.send(404, "text/plain", "File Not Found");
+  }
 }
 
 void handleOpen() {
-  digitalWrite(RELAY_OPEN, HIGH);
-  delay(1000);
-  digitalWrite(RELAY_OPEN, LOW);
+  activateRelay(RELAY_OPEN, 1000);
 
   if (lightEnabled && isTimeWithinRange()) {
     digitalWrite(RELAY_LIGHT, HIGH);
     lightTicker.attach_ms(lightDuration * 1000, turnOffLight);
   }
-  server.send(200, "application/json", "{\"code\":1}");
+  sendJsonResponse(1);
 }
 
 void turnOffLight() {
   digitalWrite(RELAY_LIGHT, LOW);
-  lightTicker.detach();  // Stop the ticker
+  lightTicker.detach();
 }
 
 void handleStop() {
-  digitalWrite(RELAY_STOP, HIGH);
-  delay(1000);
-  digitalWrite(RELAY_STOP, LOW);
-  server.send(200, "application/json", "{\"code\":2}");
+  activateRelay(RELAY_STOP, 1000);
+  sendJsonResponse(2);
 }
 
 void handleStayOpen() {
   if (digitalRead(GATE_OPEN) == HIGH) {
-    digitalWrite(RELAY_STOP, HIGH);
-    delay(1000);
-    digitalWrite(RELAY_STOP, LOW);
+    activateRelay(RELAY_STOP, 1000);
+    sendJsonResponse(10);
   } else {
-    digitalWrite(RELAY_OPEN, HIGH);
-    delay(1000);
-    digitalWrite(RELAY_OPEN, LOW);
-    /*while (digitalRead(GATE_OPEN) == LOW) {
-      delay(10);
-    }*/
+    activateRelay(RELAY_OPEN, 1000);
+    sendJsonResponse(4);
+
+    unsigned long startTime = millis();
+    while (digitalRead(GATE_OPEN) == LOW) {
+      server.handleClient();
+      if (millis() - startTime > 10000) break;
+    }
+    activateRelay(RELAY_STOP, 1000);
   }
-  server.send(200, "application/json", "{\"code\":4}");
 }
 
 void handleSetSettings() {
@@ -199,7 +200,7 @@ void handleSetSettings() {
     DeserializationError error = deserializeJson(doc, json);
 
     if (error) {
-      server.send(400, "application/json", "{\"code\":5}");
+      sendJsonResponse(5);
       return;
     }
 
@@ -212,9 +213,9 @@ void handleSetSettings() {
 
     saveSettings();
 
-    server.send(200, "application/json", "{\"code\":6}");
+    sendJsonResponse(6);
   } else {
-    server.send(400, "application/json", "{\"code\":7}");
+    sendJsonResponse(7);
   }
 }
 
@@ -238,14 +239,14 @@ void handleGetStatus() {
   doc["code"] = 9;
 
   if (digitalRead(GATE_OPEN) == HIGH) {
-    doc["gateStatus"] = 1; // Aperto fisso
+    doc["gateStatus"] = 1;
   } else if (digitalRead(GATE_CLOSE) == HIGH) {
-    doc["gateStatus"] = 2; // Chiuso
+    doc["gateStatus"] = 2;
   } else {
-    doc["gateStatus"] = 3; // In movimento
+    doc["gateStatus"] = 3;
   }
 
-  doc["lightStatus"] = (digitalRead(RELAY_LIGHT) == HIGH) ? 1 : 2; // 1: Accesa, 2: Spenta
+  doc["lightStatus"] = (digitalRead(RELAY_LIGHT) == HIGH) ? 1 : 2;
 
   String response;
   serializeJson(doc, response);
@@ -302,12 +303,8 @@ void handleKeypad() {
     enteredCode += key;
     lastKeyPressTime = millis();
 
-    Serial.println(enteredCode);
     if (enteredCode.equals(gatePassword)) {
-      Serial.println("Password corretta");
-
       performGateAction();
-
       enteredCode = "";
     } else if (enteredCode.length() >= strlen(gatePassword)) {
       enteredCode = enteredCode.substring(1);
@@ -324,7 +321,63 @@ void performGateAction() {
     handleOpen();
   } else if (strcmp(gateBehavior, "stayopen") == 0) {
     handleStayOpen();
+  }
+}
+
+void sendJsonResponse(int code) {
+  String response = "{\"code\":" + String(code) + "}";
+  server.send(200, "application/json", response);
+}
+
+void activateRelay(int pin, int duration) {
+  digitalWrite(pin, HIGH);
+  delay(duration);
+  digitalWrite(pin, LOW);
+}
+
+void updateGateLedStatus() {
+  if (digitalRead(GATE_CLOSE) == HIGH) {
+    digitalWrite(GATE_CLOSE_LED, HIGH);
+    digitalWrite(GATE_OPEN_LED, LOW);
+  } else if (digitalRead(GATE_OPEN) == HIGH) {
+    digitalWrite(GATE_OPEN_LED, HIGH);
+    digitalWrite(GATE_CLOSE_LED, LOW);
   } else {
-    Serial.println("Comportamento non riconosciuto");
+    digitalWrite(GATE_OPEN_LED, LOW);
+    digitalWrite(GATE_CLOSE_LED, LOW);
+  }
+}
+
+bool handleFileRead(String path) {
+  Serial.println("handleFileRead: " + path);
+  if (path.endsWith("/")) path += "index.html";
+  String contentType = getContentType(path);
+  if (SPIFFS.exists(path)) {
+    File file = SPIFFS.open(path, "r");
+    server.streamFile(file, contentType);
+    file.close();
+    return true;
+  }
+  Serial.println("\tFile Not Found");
+  return false;
+}
+
+String getContentType(String filename) {
+  if (filename.endsWith(".html")) return "text/html";
+  else if (filename.endsWith(".css")) return "text/css";
+  else if (filename.endsWith(".js")) return "application/javascript";
+  else if (filename.endsWith(".json")) return "application/json";
+  else if (filename.endsWith(".ico")) return "image/x-icon";
+  else if (filename.endsWith(".svg")) return "image/svg+xml";
+  return "text/plain";
+}
+
+void listFiles() {
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  while (file) {
+    Serial.print("FILE: ");
+    Serial.println(file.name());
+    file = root.openNextFile();
   }
 }
