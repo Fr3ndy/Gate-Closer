@@ -37,6 +37,9 @@ char gateBehavior[10] = "";
 unsigned long lastTimeSyncMillis = 0;
 const unsigned long timeSyncInterval = 3600000;
 
+#define LOG_FILE "/gate_log.txt"
+#define MAX_LOG_AGE 1728000000 // 20 giorni in millisecondi
+
 const byte ROWS = 4;
 const byte COLS = 4;
 char keys[ROWS][COLS] = {
@@ -73,18 +76,22 @@ void performGateAction();
 void sendJsonResponse(int code);
 void activateRelay(int pin, int duration);
 void updateGateLedStatus();
+void resetLogs();
+void logGateAction(const char* action, String ipAddress);
+void handleGetLogs();
+
 
 void setup() {
   Serial.begin(115200);
 
   if (!SPIFFS.begin(true)) {
-    Serial.println("Errore nell'inizializzazione di SPIFFS");
+    //Serial.println("Errore nell'inizializzazione di SPIFFS");
     return;
   }
-  Serial.println("SPIFFS inizializzato con successo");
+  //Serial.println("SPIFFS inizializzato con successo");
 
-  Serial.printf("Spazio totale: %d bytes\n", SPIFFS.totalBytes());
-  Serial.printf("Spazio utilizzato: %d bytes\n", SPIFFS.usedBytes());
+  //Serial.printf("Spazio totale: %d bytes\n", SPIFFS.totalBytes());
+  //Serial.printf("Spazio utilizzato: %d bytes\n", SPIFFS.usedBytes());
 
   pinMode(RELAY_OPEN, OUTPUT);
   pinMode(RELAY_STOP, OUTPUT);
@@ -109,12 +116,12 @@ void setup() {
 
   digitalWrite(CONNECTION_LED, HIGH);
 
-  Serial.println("Connesso al WiFi");
-  Serial.print("Indirizzo IP: ");
-  Serial.println(WiFi.localIP());
+  //Serial.println("Connesso al WiFi");
+  //Serial.print("Indirizzo IP: ");
+  //Serial.println(WiFi.localIP());
 
-  Serial.print("Indirizzo MAC: ");
-  Serial.println(WiFi.macAddress());
+  //Serial.print("Indirizzo MAC: ");
+  //Serial.println(WiFi.macAddress());
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
@@ -128,15 +135,16 @@ void setup() {
   server.on("/setsettings", HTTP_POST, handleSetSettings);
   server.on("/getsettings", HTTP_GET, handleGetSettings);
   server.on("/getstatus", HTTP_GET, handleGetStatus);
+  server.on("/getlogs", HTTP_GET, handleGetLogs);
   server.onNotFound([]() {
     if (!handleFileRead(server.uri()))
       server.send(404, "text/plain", "File Not Found");
   });
 
-  listFiles();
+  //listFiles();
   
   server.begin();
-  Serial.println("Server HTTP avviato");
+  //Serial.println("Server HTTP avviato");
 }
 
 void loop() {
@@ -163,6 +171,9 @@ void handleOpen() {
     digitalWrite(RELAY_LIGHT, HIGH);
     lightTicker.attach_ms(lightDuration * 1000, turnOffLight);
   }
+
+  logGateAction("Open", server.client().remoteIP().toString());
+
   sendJsonResponse(1);
 }
 
@@ -173,10 +184,12 @@ void turnOffLight() {
 
 void handleStop() {
   activateRelay(RELAY_STOP, 1000);
+  logGateAction("Stop", server.client().remoteIP().toString());
   sendJsonResponse(2);
 }
 
 void handleStayOpen() {
+  logGateAction("Stay Open", server.client().remoteIP().toString());
   if (digitalRead(GATE_OPEN) == HIGH) {
     activateRelay(RELAY_STOP, 1000);
     sendJsonResponse(10);
@@ -187,7 +200,7 @@ void handleStayOpen() {
     unsigned long startTime = millis();
     while (digitalRead(GATE_OPEN) == LOW) {
       server.handleClient();
-      if (millis() - startTime > 10000) break;
+      if (millis() - startTime > 40000) break;
     }
     activateRelay(RELAY_STOP, 1000);
   }
@@ -212,6 +225,8 @@ void handleSetSettings() {
     strlcpy(gateBehavior, doc["behavior"] | "", sizeof(gateBehavior));
 
     saveSettings();
+
+    logGateAction("Update Settings", server.client().remoteIP().toString());
 
     sendJsonResponse(6);
   } else {
@@ -304,6 +319,7 @@ void handleKeypad() {
     lastKeyPressTime = millis();
 
     if (enteredCode.equals(gatePassword)) {
+      logGateAction("Gate open by key", server.client().remoteIP().toString());
       performGateAction();
       enteredCode = "";
     } else if (enteredCode.length() >= strlen(gatePassword)) {
@@ -349,7 +365,7 @@ void updateGateLedStatus() {
 }
 
 bool handleFileRead(String path) {
-  Serial.println("handleFileRead: " + path);
+  //Serial.println("handleFileRead: " + path);
   if (path.endsWith("/")) path += "index.html";
   String contentType = getContentType(path);
   if (SPIFFS.exists(path)) {
@@ -358,7 +374,7 @@ bool handleFileRead(String path) {
     file.close();
     return true;
   }
-  Serial.println("\tFile Not Found");
+  //Serial.println("\tFile Not Found");
   return false;
 }
 
@@ -376,8 +392,62 @@ void listFiles() {
   File root = SPIFFS.open("/");
   File file = root.openNextFile();
   while (file) {
-    Serial.print("FILE: ");
-    Serial.println(file.name());
+    //Serial.print("FILE: ");
+    //Serial.println(file.name());
     file = root.openNextFile();
   }
+}
+
+void logGateAction(const char* action, String ipAddress) {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return;
+  }
+  
+  char dateTime[64];
+  strftime(dateTime, sizeof(dateTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  
+  File logFile = SPIFFS.open(LOG_FILE, FILE_APPEND);
+  if (!logFile) {
+    Serial.println("Failed to open log file for appending");
+    return;
+  }
+  
+  logFile.printf("%s | IP: %s | %s\n", dateTime, ipAddress.c_str(), action);
+  logFile.close();
+}
+
+void handleGetLogs() {
+  File logFile = SPIFFS.open(LOG_FILE, FILE_READ);
+  if (!logFile) {
+    sendJsonResponse(12); // Codice errore per file non trovato
+    return;
+  }
+
+  String logs = logFile.readString();
+  logFile.close();
+
+  DynamicJsonDocument doc(1024 + logs.length());
+  doc["code"] = 11;
+  doc["logs"] = logs;
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+
+  // Controlla se è il momento di resettare i log
+  if (millis() > MAX_LOG_AGE) {
+    resetLogs();
+  }
+}
+
+void resetLogs() {
+  File logFile = SPIFFS.open(LOG_FILE, FILE_WRITE);
+  if (!logFile) {
+    Serial.println("Failed to open log file for resetting");
+    return;
+  }
+  logFile.println("Log resettati");
+  logFile.close();
 }

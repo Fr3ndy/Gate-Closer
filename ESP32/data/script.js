@@ -251,3 +251,24 @@ function setThemeBasedOnDevicePreference() {
 }
 
 document.addEventListener("DOMContentLoaded", setThemeBasedOnDevicePreference);
+
+function getLogs() {
+  showLoading();
+  fetch("/getlogs")
+    .then((response) => response.json())
+    .then((data) => {
+      if (data.code === 11) {
+        document.getElementById("logText").textContent = data.logs;
+      } else {
+        showAlert("Errore nel recupero dei log");
+      }
+    })
+    .catch((error) => {
+      showAlert("Errore di connessione");
+    })
+    .finally(hideLoading);
+}
+
+document.getElementById("refreshLogs").addEventListener("click", getLogs);
+
+document.getElementById("logs-tab").addEventListener("click", getLogs);
