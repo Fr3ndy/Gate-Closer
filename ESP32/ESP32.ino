@@ -10,23 +10,24 @@
 const char* ssid = "****";
 const char* password = "****";
 
+// NTP server settings
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 3600;
 
 WebServer server(80);
 
+// Pin definitions
 #define RELAY_OPEN 12
 #define RELAY_STOP 33
 #define RELAY_LIGHT 14
-
 #define GATE_OPEN 35
 #define GATE_OPEN_LED 26
 #define GATE_CLOSE 34
 #define GATE_CLOSE_LED 25
-
 #define CONNECTION_LED 27
 
+// Global variables
 bool lightEnabled = false;
 int lightOnTime = 0;
 int lightOffTime = 0;
@@ -35,11 +36,12 @@ char gatePassword[20] = "";
 char gateBehavior[10] = "";
 
 unsigned long lastTimeSyncMillis = 0;
-const unsigned long timeSyncInterval = 3600000;
+const unsigned long timeSyncInterval = 3600000; // 1 hour
 
 #define LOG_FILE "/gate_log.txt"
-#define MAX_LOG_AGE 1728000000 // 20 giorni in millisecondi
+#define MAX_LOG_AGE 1728000000 // 20 days in milliseconds
 
+// Keypad setup
 const byte ROWS = 4;
 const byte COLS = 4;
 char keys[ROWS][COLS] = {
@@ -48,7 +50,7 @@ char keys[ROWS][COLS] = {
   { '7', '8', '9', 'C' },
   { '*', '0', '#', 'D' }
 };
-byte rowPins[ROWS] = { 4, 16, 17, 5 };
+byte rowPins[ROWS] = { 4, 16, 17, 23 };
 byte colPins[COLS] = { 18, 19, 21, 22 };
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 String enteredCode = "";
@@ -58,6 +60,7 @@ const unsigned long keyPressTimeout = 5000;
 
 Ticker lightTicker;
 
+// Function prototypes
 void loadSettings();
 void handleRoot();
 void handleOpen();
@@ -79,20 +82,18 @@ void updateGateLedStatus();
 void resetLogs();
 void logGateAction(const char* action, String ipAddress);
 void handleGetLogs();
-
+bool handleFileRead(String path);
+String getContentType(String filename);
+void handleGetSystemInfo();
+void logError(const char* errorMessage);
 
 void setup() {
-  Serial.begin(115200);
-
+  // Initialize SPIFFS
   if (!SPIFFS.begin(true)) {
-    //Serial.println("Errore nell'inizializzazione di SPIFFS");
     return;
   }
-  //Serial.println("SPIFFS inizializzato con successo");
 
-  //Serial.printf("Spazio totale: %d bytes\n", SPIFFS.totalBytes());
-  //Serial.printf("Spazio utilizzato: %d bytes\n", SPIFFS.usedBytes());
-
+  // Set pin modes
   pinMode(RELAY_OPEN, OUTPUT);
   pinMode(RELAY_STOP, OUTPUT);
   pinMode(RELAY_LIGHT, OUTPUT);
@@ -102,32 +103,39 @@ void setup() {
   pinMode(GATE_CLOSE_LED, OUTPUT);
   pinMode(CONNECTION_LED, OUTPUT);
 
+  // Initialize relays and LED
   digitalWrite(RELAY_OPEN, LOW);
   digitalWrite(RELAY_STOP, LOW);
   digitalWrite(RELAY_LIGHT, LOW);
   digitalWrite(CONNECTION_LED, LOW);
 
+// Configura i pin delle colonne come input con pull-up
+  for (byte i = 0; i < COLS; i++) {
+    pinMode(colPins[i], INPUT_PULLUP);
+  }
+
+  // Configura i pin delle righe come output
+  for (byte i = 0; i < ROWS; i++) {
+    pinMode(rowPins[i], OUTPUT);
+    digitalWrite(rowPins[i], HIGH);  // Imposta inizialmente a HIGH
+  }
+
+  // Connect to WiFi
   WiFi.begin(ssid, password);
-  
   while (WiFi.status() != WL_CONNECTED) {
     digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED));
     delay(500);
   }
-
   digitalWrite(CONNECTION_LED, HIGH);
 
-  //Serial.println("Connesso al WiFi");
-  //Serial.print("Indirizzo IP: ");
-  //Serial.println(WiFi.localIP());
-
-  //Serial.print("Indirizzo MAC: ");
-  //Serial.println(WiFi.macAddress());
-
+  // Configure time
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
+  // Load settings from EEPROM
   EEPROM.begin(512);
   loadSettings();
 
+  // Set up server routes
   server.on("/", HTTP_GET, handleRoot);
   server.on("/open", HTTP_GET, handleOpen);
   server.on("/stop", HTTP_GET, handleStop);
@@ -136,15 +144,14 @@ void setup() {
   server.on("/getsettings", HTTP_GET, handleGetSettings);
   server.on("/getstatus", HTTP_GET, handleGetStatus);
   server.on("/getlogs", HTTP_GET, handleGetLogs);
+  server.on("/getsysteminfo", HTTP_GET, handleGetSystemInfo);
   server.onNotFound([]() {
     if (!handleFileRead(server.uri()))
       server.send(404, "text/plain", "File Not Found");
   });
 
-  //listFiles();
-  
   server.begin();
-  //Serial.println("Server HTTP avviato");
+
 }
 
 void loop() {
@@ -173,7 +180,6 @@ void handleOpen() {
   }
 
   logGateAction("Open", server.client().remoteIP().toString());
-
   sendJsonResponse(1);
 }
 
@@ -225,9 +231,7 @@ void handleSetSettings() {
     strlcpy(gateBehavior, doc["behavior"] | "", sizeof(gateBehavior));
 
     saveSettings();
-
     logGateAction("Update Settings", server.client().remoteIP().toString());
-
     sendJsonResponse(6);
   } else {
     sendJsonResponse(7);
@@ -317,7 +321,6 @@ void handleKeypad() {
   if (key != NO_KEY) {
     enteredCode += key;
     lastKeyPressTime = millis();
-
     if (enteredCode.equals(gatePassword)) {
       logGateAction("Gate open by key", server.client().remoteIP().toString());
       performGateAction();
@@ -365,7 +368,6 @@ void updateGateLedStatus() {
 }
 
 bool handleFileRead(String path) {
-  //Serial.println("handleFileRead: " + path);
   if (path.endsWith("/")) path += "index.html";
   String contentType = getContentType(path);
   if (SPIFFS.exists(path)) {
@@ -374,7 +376,6 @@ bool handleFileRead(String path) {
     file.close();
     return true;
   }
-  //Serial.println("\tFile Not Found");
   return false;
 }
 
@@ -388,32 +389,22 @@ String getContentType(String filename) {
   return "text/plain";
 }
 
-void listFiles() {
-  File root = SPIFFS.open("/");
-  File file = root.openNextFile();
-  while (file) {
-    //Serial.print("FILE: ");
-    //Serial.println(file.name());
-    file = root.openNextFile();
-  }
-}
-
 void logGateAction(const char* action, String ipAddress) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time");
+    logError("Failed to obtain time");
     return;
   }
-  
+
   char dateTime[64];
   strftime(dateTime, sizeof(dateTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
-  
+
   File logFile = SPIFFS.open(LOG_FILE, FILE_APPEND);
   if (!logFile) {
-    Serial.println("Failed to open log file for appending");
+    logError("Failed to open log file for appending");
     return;
   }
-  
+
   logFile.printf("%s | IP: %s | %s\n", dateTime, ipAddress.c_str(), action);
   logFile.close();
 }
@@ -421,7 +412,7 @@ void logGateAction(const char* action, String ipAddress) {
 void handleGetLogs() {
   File logFile = SPIFFS.open(LOG_FILE, FILE_READ);
   if (!logFile) {
-    sendJsonResponse(12); // Codice errore per file non trovato
+    sendJsonResponse(12);  // Error code for file not found
     return;
   }
 
@@ -436,7 +427,7 @@ void handleGetLogs() {
   serializeJson(doc, response);
   server.send(200, "application/json", response);
 
-  // Controlla se è il momento di resettare i log
+  // Check if it's time to reset the logs
   if (millis() > MAX_LOG_AGE) {
     resetLogs();
   }
@@ -445,9 +436,53 @@ void handleGetLogs() {
 void resetLogs() {
   File logFile = SPIFFS.open(LOG_FILE, FILE_WRITE);
   if (!logFile) {
-    Serial.println("Failed to open log file for resetting");
+    logError("Failed to open log file for resetting");
     return;
   }
-  logFile.println("Log resettati");
+  logFile.println("Logs reset");
   logFile.close();
+}
+
+void handleGetSystemInfo() {
+  DynamicJsonDocument doc(1024);
+
+  // Uptime
+  unsigned long uptime = millis() / 1000;  // Convert to seconds
+  char uptimeStr[20];
+  sprintf(uptimeStr, "%d days %02d:%02d:%02d", uptime / 86400, (uptime % 86400) / 3600, (uptime % 3600) / 60, uptime % 60);
+  doc["uptime"] = uptimeStr;
+
+  // Memory
+  doc["usedMemory"] = SPIFFS.usedBytes();
+  doc["freeMemory"] = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+
+  // Error logs
+  File errorLogFile = SPIFFS.open("/error_log.txt", "r");
+  if (errorLogFile) {
+    doc["errorLogs"] = errorLogFile.readString();
+    errorLogFile.close();
+  } else {
+    doc["errorLogs"] = "No error logs available";
+  }
+
+  doc["code"] = 12;
+
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void logError(const char* errorMessage) {
+  File errorLogFile = SPIFFS.open("/error_log.txt", "a");
+  if (errorLogFile) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      char timeStr[20];
+      strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+      errorLogFile.printf("[%s] %s\n", timeStr, errorMessage);
+    } else {
+      errorLogFile.printf("%s\n", errorMessage);
+    }
+    errorLogFile.close();
+  }
 }

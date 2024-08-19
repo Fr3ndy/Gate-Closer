@@ -272,3 +272,34 @@ function getLogs() {
 document.getElementById("refreshLogs").addEventListener("click", getLogs);
 
 document.getElementById("logs-tab").addEventListener("click", getLogs);
+
+function getSystemInfo() {
+  showLoading();
+  fetch("/getsysteminfo")
+      .then(response => response.json())
+      .then(data => {
+          if (data.code === 12) {  // Supponiamo che 12 sia il codice per le informazioni di sistema
+              document.getElementById("uptime").textContent = data.uptime;
+              document.getElementById("usedMemory").textContent = data.usedMemory;
+              document.getElementById("freeMemory").textContent = data.freeMemory;
+              document.getElementById("errorLogs").value = data.errorLogs;
+          } else {
+              showAlert("Errore nel recupero delle informazioni di sistema");
+          }
+      })
+      .catch(error => {
+          showAlert("Errore di connessione");
+      })
+      .finally(hideLoading);
+}
+
+document.getElementById("refreshInfo").addEventListener("click", getSystemInfo);
+document.getElementById("info-tab").addEventListener("click", getSystemInfo);
+
+document.addEventListener("DOMContentLoaded", function() {
+  const pageLoader = document.getElementById('loading');
+  pageLoader.classList.add('fade-out');
+  setTimeout(() => {
+      pageLoader.style.display = 'none';
+  }, 300);
+});

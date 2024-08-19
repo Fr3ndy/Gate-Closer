@@ -36,10 +36,16 @@
                         Log
                     </button>
                 </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="info-tab" data-bs-toggle="tab" data-bs-target="#info" type="button"
+                        role="tab" aria-controls="Info" aria-selected="false">
+                        Info
+                    </button>
+                </li>
             </ul>
-            
+
         </div>
-        <div class="tab-content" id="myTabContent">
+        <div class="tab-content mb-5" id="myTabContent">
             <div class="tab-pane fade show active" id="generale" role="tabpanel" aria-labelledby="generale-tab">
                 <div class="section mt-4">
                     <h3>Generale</h3>
@@ -70,7 +76,7 @@
                 </div>
             </div>
             <div class="tab-pane fade" id="impostazioni" role="tabpanel" aria-labelledby="impostazioni-tab">
-                <div class="section mt-4">
+                <div class="section mt-3">
                     <h3>Pulsantiera</h3>
                     <div class="form-group">
                         <label for="password">Password Apertura:</label>
@@ -85,7 +91,7 @@
                         </select>
                     </div>
                 </div>
-                <div class="section mt-4 d-flex justify-content-center flex-column">
+                <div class="section mt-3">
                     <h3>Luce Cortesia</h3>
                     <div class="form-check">
                         <input type="checkbox" class="form-check-input" id="enableL" />
@@ -103,7 +109,7 @@
                         <label for="lightOffTime">Orario di disattivazione:</label>
                         <input type="time" class="form-control" id="lightOffTime" />
                     </div>
-                    <button class="btn btn-primary mt-4" onclick="updateSettings()">
+                    <button class="btn btn-primary mt-3" onclick="updateSettings()">
                         Salva Impostazioni
                     </button>
                 </div>
@@ -111,9 +117,18 @@
             <div class="tab-pane fade" id="logs" role="tabpanel" aria-labelledby="logs-tab">
                 <h3>Log del cancello</h3>
                 <div id="logContent" class="mt-3">
-                    <pre id="logText"></pre>
+                    <textarea id="logText" rows="10" readonly class="form-control"></textarea>
                 </div>
                 <button id="refreshLogs" class="btn btn-primary mt-3">Aggiorna Log</button>
+            </div>
+            <div class="tab-pane fade" id="info" role="tabpanel" aria-labelledby="info-tab">
+                <h2>Informazioni di Sistema</h2>
+                <p>Tempo di attività: <span id="uptime"></span></p>
+                <p>Memoria utilizzata: <span id="usedMemory"></span></p>
+                <p>Memoria disponibile: <span id="freeMemory"></span></p>
+                <h3>Log di Errori</h3>
+                <textarea id="errorLogs" rows="10" readonly class="form-control"></textarea>
+                <button id="refreshInfo" class="btn btn-primary mt-3">Aggiorna Informazioni</button>
             </div>
         </div>
     </div>
