@@ -7,15 +7,18 @@
 #include <Ticker.h>
 #include <SPIFFS.h>
 
+// Configuration constants
 const char* ssid = "****";
 const char* password = "****";
 
+const char* deviceName = "GateController";
+
 // NTP server settings
-const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 3600;
 const int daylightOffset_sec = 3600;
-
-WebServer server(80);
+const char* ntpServer1 = "pool.ntp.org";
+const char* ntpServer2 = "time.nist.gov";
+const char* ntpServer3 = "time.google.com";
 
 // Pin definitions
 #define RELAY_OPEN 12
@@ -28,15 +31,23 @@ WebServer server(80);
 #define CONNECTION_LED 27
 
 // Global variables
+WebServer server(80);
 bool lightEnabled = false;
 int lightOnTime = 0;
 int lightOffTime = 0;
 int lightDuration = 10;
 char gatePassword[20] = "";
 char gateBehavior[10] = "";
+bool timeInitialized = false;
 
 unsigned long lastTimeSyncMillis = 0;
 const unsigned long timeSyncInterval = 3600000; // 1 hour
+unsigned long lastWiFiCheckMillis = 0;
+const unsigned long wifiCheckInterval = 30000; // 30 seconds
+unsigned long lastRebootMillis = 0;
+const unsigned long rebootInterval = 7 * 24 * 60 * 60 * 1000; // 7 days
+unsigned long lastKeyPressTime = 0;
+const unsigned long keyPressTimeout = 5000;
 
 #define LOG_FILE "/gate_log.txt"
 #define MAX_LOG_AGE 1728000000 // 20 days in milliseconds
@@ -55,13 +66,13 @@ byte colPins[COLS] = { 18, 19, 21, 22 };
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 String enteredCode = "";
 
-unsigned long lastKeyPressTime = 0;
-const unsigned long keyPressTimeout = 5000;
-
 Ticker lightTicker;
 
 // Function prototypes
+void setupWiFi();
+void configureTime();
 void loadSettings();
+void saveSettings();
 void handleRoot();
 void handleOpen();
 void handleStop();
@@ -69,31 +80,33 @@ void handleStayOpen();
 void handleSetSettings();
 void handleGetSettings();
 void handleGetStatus();
+void handleGetLogs();
+void handleGetSystemInfo();
 void syncTimeIfNeeded();
+void checkWiFiConnection();
+void checkForReboot();
 void handleKeypad();
-bool isTimeWithinRange();
-int getCurrentTime();
-void saveSettings();
+void updateGateLedStatus();
 void turnOffLight();
 void performGateAction();
-void sendJsonResponse(int code);
 void activateRelay(int pin, int duration);
-void updateGateLedStatus();
-void resetLogs();
 void logGateAction(const char* action, String ipAddress);
-void handleGetLogs();
+void logError(const char* errorMessage);
+void resetLogs();
+void rebootDevice();
+bool isTimeWithinRange();
+int getCurrentTime();
 bool handleFileRead(String path);
 String getContentType(String filename);
-void handleGetSystemInfo();
-void logError(const char* errorMessage);
+void sendJsonResponse(int code);
 
+// Setup function
 void setup() {
-  // Initialize SPIFFS
   if (!SPIFFS.begin(true)) {
     return;
   }
 
-  // Set pin modes
+  // Set pin modes and initialize
   pinMode(RELAY_OPEN, OUTPUT);
   pinMode(RELAY_STOP, OUTPUT);
   pinMode(RELAY_LIGHT, OUTPUT);
@@ -103,39 +116,23 @@ void setup() {
   pinMode(GATE_CLOSE_LED, OUTPUT);
   pinMode(CONNECTION_LED, OUTPUT);
 
-  // Initialize relays and LED
   digitalWrite(RELAY_OPEN, LOW);
   digitalWrite(RELAY_STOP, LOW);
   digitalWrite(RELAY_LIGHT, LOW);
   digitalWrite(CONNECTION_LED, LOW);
 
-// Configura i pin delle colonne come input con pull-up
   for (byte i = 0; i < COLS; i++) {
     pinMode(colPins[i], INPUT_PULLUP);
   }
-
-  // Configura i pin delle righe come output
   for (byte i = 0; i < ROWS; i++) {
     pinMode(rowPins[i], OUTPUT);
-    digitalWrite(rowPins[i], HIGH);  // Imposta inizialmente a HIGH
+    digitalWrite(rowPins[i], HIGH);
   }
 
-  // Connect to WiFi
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED));
-    delay(500);
-  }
-  digitalWrite(CONNECTION_LED, HIGH);
-
-  // Configure time
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-  // Load settings from EEPROM
+  setupWiFi();
   EEPROM.begin(512);
   loadSettings();
 
-  // Set up server routes
   server.on("/", HTTP_GET, handleRoot);
   server.on("/open", HTTP_GET, handleOpen);
   server.on("/stop", HTTP_GET, handleStop);
@@ -151,16 +148,136 @@ void setup() {
   });
 
   server.begin();
-
+  lastRebootMillis = millis();
 }
 
+// Main loop
 void loop() {
-  server.handleClient();
-  syncTimeIfNeeded();
-  handleKeypad();
-  updateGateLedStatus();
+  try {
+    server.handleClient();
+    syncTimeIfNeeded();
+    handleKeypad();
+    updateGateLedStatus();
+    checkWiFiConnection();
+    checkForReboot();
+  } catch (const std::exception& e) {
+    logError("Critical error in main loop. Rebooting...");
+    delay(1000);
+    rebootDevice();
+  }
 }
 
+// WiFi and Time functions
+// -----------------------
+
+// Set up WiFi connection
+void setupWiFi() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(deviceName);
+  WiFi.begin(ssid, password);
+  
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 10000) {
+    digitalWrite(CONNECTION_LED, !digitalRead(CONNECTION_LED));
+    delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    digitalWrite(CONNECTION_LED, HIGH);
+    delay(1000);
+    configureTime();
+  } else {
+    digitalWrite(CONNECTION_LED, LOW);
+  }
+}
+
+// Configure and synchronize time
+void configureTime() {
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer1, ntpServer2, ntpServer3);
+  
+  int retryCount = 0;
+  const int maxRetries = 5;
+  
+  while (!timeInitialized && retryCount < maxRetries) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      timeInitialized = true;
+      logGateAction("Time synchronized", WiFi.localIP().toString());
+    } else {
+      retryCount++;
+      delay(1000);
+    }
+  }
+  
+  if (!timeInitialized) {
+    logError("Failed to obtain time after multiple attempts");
+  }
+}
+
+// Check and maintain WiFi connection
+void checkWiFiConnection() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastWiFiCheckMillis >= wifiCheckInterval) {
+    lastWiFiCheckMillis = currentMillis;
+    if (WiFi.status() != WL_CONNECTED) {
+      logError("WiFi disconnected. Attempting to reconnect...");
+      setupWiFi();
+    }
+  }
+}
+
+// Synchronize time if needed
+void syncTimeIfNeeded() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastTimeSyncMillis >= timeSyncInterval || !timeInitialized) {
+    configureTime();
+    lastTimeSyncMillis = currentMillis;
+  }
+}
+
+// Check if it's time for a scheduled reboot
+void checkForReboot() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastRebootMillis >= rebootInterval) {
+    logGateAction("Performing scheduled reboot", WiFi.localIP().toString());
+    delay(1000);
+    rebootDevice();
+  }
+}
+
+// Restart the device
+void rebootDevice() {
+  ESP.restart();
+}
+
+// Settings functions
+// ------------------
+
+// Load settings from EEPROM
+void loadSettings() {
+  EEPROM.get(0, lightEnabled);
+  EEPROM.get(1, lightDuration);
+  EEPROM.get(5, lightOnTime);
+  EEPROM.get(9, lightOffTime);
+  EEPROM.get(13, gatePassword);
+  EEPROM.get(33, gateBehavior);
+}
+
+// Save settings to EEPROM
+void saveSettings() {
+  EEPROM.put(0, lightEnabled);
+  EEPROM.put(1, lightDuration);
+  EEPROM.put(5, lightOnTime);
+  EEPROM.put(9, lightOffTime);
+  EEPROM.put(13, gatePassword);
+  EEPROM.put(33, gateBehavior);
+  EEPROM.commit();
+}
+
+// Server handler functions
+// ------------------------
+
+// Handle root path
 void handleRoot() {
   if (SPIFFS.exists("/index.html")) {
     File file = SPIFFS.open("/index.html", "r");
@@ -171,6 +288,7 @@ void handleRoot() {
   }
 }
 
+// Handle open gate request
 void handleOpen() {
   activateRelay(RELAY_OPEN, 1000);
 
@@ -183,17 +301,14 @@ void handleOpen() {
   sendJsonResponse(1);
 }
 
-void turnOffLight() {
-  digitalWrite(RELAY_LIGHT, LOW);
-  lightTicker.detach();
-}
-
+// Handle stop gate request
 void handleStop() {
   activateRelay(RELAY_STOP, 1000);
   logGateAction("Stop", server.client().remoteIP().toString());
   sendJsonResponse(2);
 }
 
+// Handle stay open gate request
 void handleStayOpen() {
   logGateAction("Stay Open", server.client().remoteIP().toString());
   if (digitalRead(GATE_OPEN) == HIGH) {
@@ -212,6 +327,7 @@ void handleStayOpen() {
   }
 }
 
+// Handle set settings request
 void handleSetSettings() {
   if (server.hasArg("plain")) {
     String json = server.arg("plain");
@@ -238,6 +354,7 @@ void handleSetSettings() {
   }
 }
 
+// Handle get settings request
 void handleGetSettings() {
   DynamicJsonDocument doc(1024);
   doc["code"] = 8;
@@ -253,6 +370,7 @@ void handleGetSettings() {
   server.send(200, "application/json", response);
 }
 
+// Handle get status request
 void handleGetStatus() {
   DynamicJsonDocument doc(1024);
   doc["code"] = 9;
@@ -272,143 +390,7 @@ void handleGetStatus() {
   server.send(200, "application/json", response);
 }
 
-bool isTimeWithinRange() {
-  int currentTime = getCurrentTime();
-  if (lightOnTime < lightOffTime) {
-    return currentTime >= lightOnTime && currentTime <= lightOffTime;
-  } else {
-    return currentTime >= lightOnTime || currentTime <= lightOffTime;
-  }
-}
-
-int getCurrentTime() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    return 0;
-  }
-  return timeinfo.tm_hour * 60 + timeinfo.tm_min;
-}
-
-void saveSettings() {
-  EEPROM.put(0, lightEnabled);
-  EEPROM.put(1, lightDuration);
-  EEPROM.put(5, lightOnTime);
-  EEPROM.put(9, lightOffTime);
-  EEPROM.put(13, gatePassword);
-  EEPROM.put(33, gateBehavior);
-  EEPROM.commit();
-}
-
-void loadSettings() {
-  EEPROM.get(0, lightEnabled);
-  EEPROM.get(1, lightDuration);
-  EEPROM.get(5, lightOnTime);
-  EEPROM.get(9, lightOffTime);
-  EEPROM.get(13, gatePassword);
-  EEPROM.get(33, gateBehavior);
-}
-
-void syncTimeIfNeeded() {
-  unsigned long currentMillis = millis();
-  if (currentMillis - lastTimeSyncMillis >= timeSyncInterval) {
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    lastTimeSyncMillis = currentMillis;
-  }
-}
-
-void handleKeypad() {
-  char key = keypad.getKey();
-  if (key != NO_KEY) {
-    enteredCode += key;
-    lastKeyPressTime = millis();
-    if (enteredCode.equals(gatePassword)) {
-      logGateAction("Gate open by key", server.client().remoteIP().toString());
-      performGateAction();
-      enteredCode = "";
-    } else if (enteredCode.length() >= strlen(gatePassword)) {
-      enteredCode = enteredCode.substring(1);
-    }
-  }
-
-  if (millis() - lastKeyPressTime > keyPressTimeout) {
-    enteredCode = "";
-  }
-}
-
-void performGateAction() {
-  if (strcmp(gateBehavior, "open") == 0) {
-    handleOpen();
-  } else if (strcmp(gateBehavior, "stayopen") == 0) {
-    handleStayOpen();
-  }
-}
-
-void sendJsonResponse(int code) {
-  String response = "{\"code\":" + String(code) + "}";
-  server.send(200, "application/json", response);
-}
-
-void activateRelay(int pin, int duration) {
-  digitalWrite(pin, HIGH);
-  delay(duration);
-  digitalWrite(pin, LOW);
-}
-
-void updateGateLedStatus() {
-  if (digitalRead(GATE_CLOSE) == HIGH) {
-    digitalWrite(GATE_CLOSE_LED, HIGH);
-    digitalWrite(GATE_OPEN_LED, LOW);
-  } else if (digitalRead(GATE_OPEN) == HIGH) {
-    digitalWrite(GATE_OPEN_LED, HIGH);
-    digitalWrite(GATE_CLOSE_LED, LOW);
-  } else {
-    digitalWrite(GATE_OPEN_LED, LOW);
-    digitalWrite(GATE_CLOSE_LED, LOW);
-  }
-}
-
-bool handleFileRead(String path) {
-  if (path.endsWith("/")) path += "index.html";
-  String contentType = getContentType(path);
-  if (SPIFFS.exists(path)) {
-    File file = SPIFFS.open(path, "r");
-    server.streamFile(file, contentType);
-    file.close();
-    return true;
-  }
-  return false;
-}
-
-String getContentType(String filename) {
-  if (filename.endsWith(".html")) return "text/html";
-  else if (filename.endsWith(".css")) return "text/css";
-  else if (filename.endsWith(".js")) return "application/javascript";
-  else if (filename.endsWith(".json")) return "application/json";
-  else if (filename.endsWith(".ico")) return "image/x-icon";
-  else if (filename.endsWith(".svg")) return "image/svg+xml";
-  return "text/plain";
-}
-
-void logGateAction(const char* action, String ipAddress) {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    logError("Failed to obtain time");
-    return;
-  }
-
-  char dateTime[64];
-  strftime(dateTime, sizeof(dateTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
-
-  File logFile = SPIFFS.open(LOG_FILE, FILE_APPEND);
-  if (!logFile) {
-    logError("Failed to open log file for appending");
-    return;
-  }
-
-  logFile.printf("%s | IP: %s | %s\n", dateTime, ipAddress.c_str(), action);
-  logFile.close();
-}
-
+// Handle get logs request
 void handleGetLogs() {
   File logFile = SPIFFS.open(LOG_FILE, FILE_READ);
   if (!logFile) {
@@ -427,36 +409,23 @@ void handleGetLogs() {
   serializeJson(doc, response);
   server.send(200, "application/json", response);
 
-  // Check if it's time to reset the logs
   if (millis() > MAX_LOG_AGE) {
     resetLogs();
   }
 }
 
-void resetLogs() {
-  File logFile = SPIFFS.open(LOG_FILE, FILE_WRITE);
-  if (!logFile) {
-    logError("Failed to open log file for resetting");
-    return;
-  }
-  logFile.println("Logs reset");
-  logFile.close();
-}
-
+// Handle get system info request
 void handleGetSystemInfo() {
   DynamicJsonDocument doc(1024);
 
-  // Uptime
-  unsigned long uptime = millis() / 1000;  // Convert to seconds
+  unsigned long uptime = millis() / 1000;
   char uptimeStr[20];
   sprintf(uptimeStr, "%d days %02d:%02d:%02d", uptime / 86400, (uptime % 86400) / 3600, (uptime % 3600) / 60, uptime % 60);
   doc["uptime"] = uptimeStr;
 
-  // Memory
   doc["usedMemory"] = SPIFFS.usedBytes();
   doc["freeMemory"] = SPIFFS.totalBytes() - SPIFFS.usedBytes();
 
-  // Error logs
   File errorLogFile = SPIFFS.open("/error_log.txt", "r");
   if (errorLogFile) {
     doc["errorLogs"] = errorLogFile.readString();
@@ -472,6 +441,104 @@ void handleGetSystemInfo() {
   server.send(200, "application/json", response);
 }
 
+// Utility functions
+// -----------------
+
+// Check if current time is within the light operation range
+bool isTimeWithinRange() {
+  int currentTime = getCurrentTime();
+  if (lightOnTime < lightOffTime) {
+    return currentTime >= lightOnTime && currentTime <= lightOffTime;
+  } else {
+    return currentTime >= lightOnTime || currentTime <= lightOffTime;
+  }
+}
+
+// Get current time as minutes since midnight
+int getCurrentTime() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return 0;
+  }
+  return timeinfo.tm_hour * 60 + timeinfo.tm_min;
+}
+
+// Handle keypad input
+void handleKeypad() {
+  char key = keypad.getKey();
+  if (key != NO_KEY) {
+    enteredCode += key;
+    lastKeyPressTime = millis();
+    if (enteredCode.equals(gatePassword)) {
+      logGateAction("Gate open by key", WiFi.localIP().toString());
+      performGateAction();
+      enteredCode = "";
+    } else if (enteredCode.length() >= strlen(gatePassword)) {
+      enteredCode = enteredCode.substring(1);
+    }
+  }
+
+  if (millis() - lastKeyPressTime > keyPressTimeout) {
+    enteredCode = "";
+  }
+}
+
+// Update gate LED status
+void updateGateLedStatus() {
+  if (digitalRead(GATE_CLOSE) == HIGH) {
+    digitalWrite(GATE_CLOSE_LED, HIGH);
+    digitalWrite(GATE_OPEN_LED, LOW);
+  } else if (digitalRead(GATE_OPEN) == HIGH) {
+    digitalWrite(GATE_OPEN_LED, HIGH);
+    digitalWrite(GATE_CLOSE_LED, LOW);
+  } else {
+    digitalWrite(GATE_OPEN_LED, LOW);
+    digitalWrite(GATE_CLOSE_LED, LOW);
+  }
+}
+
+// Turn off the light
+void turnOffLight() {
+  digitalWrite(RELAY_LIGHT, LOW);
+  lightTicker.detach();
+}
+
+// Perform gate action based on behavior setting
+void performGateAction() {
+  if (strcmp(gateBehavior, "open") == 0) {
+    handleOpen();
+  } else if (strcmp(gateBehavior, "stayopen") == 0) {
+    handleStayOpen();
+  }
+}
+
+// Activate a relay for a specified duration
+void activateRelay(int pin, int duration) {
+  digitalWrite(pin, HIGH);
+  delay(duration);
+  digitalWrite(pin, LOW);
+}
+
+// Log gate action
+void logGateAction(const char* action, String ipAddress) {
+  struct tm timeinfo;
+  char dateTime[64] = "Time not set";
+  
+  if (timeInitialized && getLocalTime(&timeinfo)) {
+    strftime(dateTime, sizeof(dateTime), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  }
+
+  File logFile = SPIFFS.open(LOG_FILE, FILE_APPEND);
+  if (!logFile) {
+    logError("Failed to open log file for appending");
+    return;
+  }
+
+  logFile.printf("%s | IP: %s | %s\n", dateTime, ipAddress.c_str(), action);
+  logFile.close();
+}
+
+// Log error message
 void logError(const char* errorMessage) {
   File errorLogFile = SPIFFS.open("/error_log.txt", "a");
   if (errorLogFile) {
@@ -485,4 +552,45 @@ void logError(const char* errorMessage) {
     }
     errorLogFile.close();
   }
+}
+
+// Reset logs
+void resetLogs() {
+  File logFile = SPIFFS.open(LOG_FILE, FILE_WRITE);
+  if (!logFile) {
+    logError("Failed to open log file for resetting");
+    return;
+  }
+  logFile.println("Logs reset");
+  logFile.close();
+}
+
+// Handle file read for web server
+bool handleFileRead(String path) {
+  if (path.endsWith("/")) path += "index.html";
+  String contentType = getContentType(path);
+  if (SPIFFS.exists(path)) {
+    File file = SPIFFS.open(path, "r");
+    server.streamFile(file, contentType);
+    file.close();
+    return true;
+  }
+  return false;
+}
+
+// Get content type for web server
+String getContentType(String filename) {
+  if (filename.endsWith(".html")) return "text/html";
+  else if (filename.endsWith(".css")) return "text/css";
+  else if (filename.endsWith(".js")) return "application/javascript";
+  else if (filename.endsWith(".json")) return "application/json";
+  else if (filename.endsWith(".ico")) return "image/x-icon";
+  else if (filename.endsWith(".svg")) return "image/svg+xml";
+  return "text/plain";
+}
+
+// Send JSON response
+void sendJsonResponse(int code) {
+  String response = "{\"code\":" + String(code) + "}";
+  server.send(200, "application/json", response);
 }
